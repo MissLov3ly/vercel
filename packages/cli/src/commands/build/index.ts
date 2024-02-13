@@ -21,7 +21,8 @@ import {
   NowBuildError,
   Cron,
   validateNpmrc,
-  type FlagDefinitions,
+  Flag,
+  VariantDefinition,
 } from '@vercel/build-utils';
 import {
   detectBuilders,
@@ -95,6 +96,9 @@ interface BuildOutputConfig {
     version: string;
   };
   crons?: Cron[];
+  /** @deprecated Replaced by Variants. Remove once fully replaced. */
+  flags?: Flag[];
+  variants?: Record<string, VariantDefinition>;
 }
 
 /**
@@ -663,6 +667,7 @@ async function doBuild(
   const mergedWildcard = mergeWildcard(buildResults.values());
   const mergedOverrides: Record<string, PathOverride> =
     overrides.length > 0 ? Object.assign({}, ...overrides) : undefined;
+  const mergedFlags = mergeFlags(buildResults.values());
 
   const framework = await getFramework(cwd, buildResults);
 
@@ -676,10 +681,12 @@ async function doBuild(
     overrides: mergedOverrides,
     framework,
     crons: mergedCrons,
+    /** @deprecated Replaced by Variants. Remove once fully replaced. */
+    flags: mergedFlags,
   };
   await fs.writeJSON(join(outputDir, 'config.json'), config, { spaces: 2 });
 
-  await writeFlagsJSON(client, buildResults.values(), outputDir);
+  await writeVariantsJson(client, buildResults.values(), outputDir);
 
   const relOutputDir = relative(cwd, outputDir);
   output.print(
@@ -813,51 +820,60 @@ function mergeWildcard(
   return wildcard;
 }
 
+function mergeFlags(
+  buildResults: Iterable<BuildResult | BuildOutputConfig>
+): BuildResultV2Typical['flags'] {
+  return Array.from(buildResults).flatMap(result => {
+    if ('flags' in result) {
+      return result.flags ?? [];
+    }
+
+    return [];
+  });
+}
+
 /**
- * Takes the build output and writes all the flags into the `flags.json`
- * file. It'll skip flags that already exist.
+ * Takes the build output and writes all the variants into the `variants.json`
+ * file. It'll skip variants that already exist.
  */
-async function writeFlagsJSON(
+async function writeVariantsJson(
   { output }: Client,
   buildResults: Iterable<BuildResult | BuildOutputConfig>,
   outputDir: string
 ): Promise<void> {
-  const flagsFilePath = join(outputDir, 'flags.json');
+  const variantsFilePath = join(outputDir, 'variants.json');
 
-  let hasFlags = true;
+  let hasVariants = true;
 
-  const flags = (await fs.readJSON(flagsFilePath).catch(error => {
+  const variants = (await fs.readJSON(variantsFilePath).catch(error => {
     if (error.code === 'ENOENT') {
-      hasFlags = false;
+      hasVariants = false;
       return { definitions: {} };
     }
 
     throw error;
-  })) as { definitions: FlagDefinitions };
+  })) as { definitions: Record<string, VariantDefinition> };
 
   for (const result of buildResults) {
-    if (!('flags' in result) || !result.flags || !result.flags.definitions)
-      continue;
+    if (!('variants' in result) || !result.variants) continue;
 
-    for (const [key, definition] of Object.entries(result.flags.definitions)) {
-      if (result.flags.definitions[key]) {
+    for (const [key, defintion] of Object.entries(result.variants)) {
+      if (result.variants[key]) {
         output.warn(
-          `The flag "${key}" was found multiple times. Only its first occurrence will be considered.`
+          `The variant "${key}" was found multiple times. Only its first occurrence will be considered.`
         );
         continue;
       }
 
-      hasFlags = true;
-      flags.definitions[key] = definition;
+      hasVariants = true;
+      variants.definitions[key] = defintion;
     }
   }
 
-  // Only create the file when there are flags to write,
+  // Only create the file when there are variants to write,
   // or when the file already exists.
-  // Checking `definitions` alone won't be enough in case there
-  // are other properties set.
-  if (hasFlags) {
-    await fs.writeJSON(flagsFilePath, flags, { spaces: 2 });
+  if (hasVariants) {
+    await fs.writeJSON(variantsFilePath, variants, { spaces: 2 });
   }
 }
 
